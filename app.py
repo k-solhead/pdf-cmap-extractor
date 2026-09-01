@@ -33,7 +33,8 @@ def list_embedded_fonts(pdf_bytes):
     seen = set()
     unique = []
     for f in all_fonts:
-        key = (f.get('xref'), f.get('fontname', ''))
+        # get_fonts() returns tuples: (xref, font_enc, font_type, fontname, font_name, enc2)
+        key = (f[0], f[3])
         if key not in seen:
             seen.add(key)
             unique.append(f)
@@ -44,10 +45,10 @@ def list_embedded_fonts(pdf_bytes):
     for i, f in enumerate(unique):
         info_lines.append({
             'index': i,
-            'xref': f.get('xref', 0),
-            'name': f.get('fontname', f.get('name', '?')),
-            'type': f.get('type', '?'),
-            'font_enc': f.get('font_enc', '?'),
+            'xref': f[0],
+            'name': f[3],
+            'type': f[2],
+            'font_enc': f[1],
         })
 
     return info_lines, None
@@ -69,7 +70,7 @@ def extract_font_data(pdf_bytes, font_index=0):
     seen_xref = set()
     unique = []
     for f in candidates:
-        x = f.get('xref', 0)
+        x = f[0]  # tuple: (xref, enc, type, fontname, name, enc2)
         if x and x not in seen_xref:
             seen_xref.add(x)
             unique.append(f)
@@ -79,8 +80,8 @@ def extract_font_data(pdf_bytes, font_index=0):
         return None, f"フォントインデックス {font_index} が範囲外 (0-{len(unique)-1})"
 
     target = unique[font_index]
-    xref = target.get('xref', 0)
-    fontname = target.get('fontname', target.get('name', '?'))
+    xref = target[0]
+    fontname = target[3]
 
     try:
         raw = doc.get_data(xref)

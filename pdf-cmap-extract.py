@@ -46,22 +46,21 @@ def extract_font_programs(pdf_path):
     seen = set()
     unique_fonts = []
     for f in fonts_found:
-        key = (f.get('xref'), f.get('fontname', ''))
+        # get_fonts() returns tuples: (xref, enc, type, fontname, name, enc2)
+        key = (f[0], f[3])
         if key not in seen:
             seen.add(key)
             unique_fonts.append(f)
 
     if not unique_fonts:
         print("No embedded fonts found on page resources.")
-        # ドキュメント全体のフォントリストも試す
-        doc_fonts = doc.get_fontlist()
-        if doc_fonts:
-            unique_fonts = doc_fonts
+        doc.close()
+        return []
 
     results = []
     for f in unique_fonts:
-        fontname = f.get('fontname', f.get('name', 'unknown'))
-        xref = f.get('xref', 0)
+        fontname = f[3]
+        xref = f[0]
         if not xref:
             continue
         try:
@@ -101,7 +100,7 @@ def try_extract_font_from_pdf(pdf_path, font_index=0):
     seen_xref = set()
     unique_candidates = []
     for f in candidates:
-        x = f.get('xref', 0)
+        x = f[0]  # tuple: (xref, enc, type, fontname, name, enc2)
         if x and x not in seen_xref:
             seen_xref.add(x)
             unique_candidates.append(f)
@@ -112,8 +111,8 @@ def try_extract_font_from_pdf(pdf_path, font_index=0):
         return []
 
     target = unique_candidates[font_index]
-    xref = target.get('xref', 0)
-    fontname = target.get('fontname', target.get('name', '?'))
+    xref = target[0]
+    fontname = target[3]
     print(f"  Font: {fontname}  xref={xref}")
 
     results = []
@@ -249,12 +248,12 @@ def list_embedded_fonts(pdf_path):
 
     seen = set()
     for i, f in enumerate(all_fonts):
-        key = (f.get('xref'), f.get('fontname', ''))
+        key = (f[0], f[3])
         if key not in seen:
             seen.add(key)
-            print(f"  [{i}] xref={f.get('xref')}  "
-                  f"name='{f.get('fontname', f.get('name', '?'))}'  "
-                  f"type={f.get('type', '?')}")
+            print(f"  [{i}] xref={f[0]}  "
+                  f"name='{f[3]}'  "
+                  f"type={f[2]}")
 
     doc.close()
     if not seen:
