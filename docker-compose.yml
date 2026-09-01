@@ -1,0 +1,10 @@
+services:
+  pdf-cmap-extractor:
+    build: .
+    container_name: pdf-cmap-extractor
+    ports:
+      - "8501:8501"
+    volumes:
+      # ホストのPDFをマウントしてコンテナ内からもアクセス可能に
+      - ./pdfs:/pdfs:ro
+    restart: unless-stopped
