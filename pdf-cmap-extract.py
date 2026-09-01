@@ -22,9 +22,30 @@ from fontTools.ttLib import TTFont
 from fontTools.ttLib.tables._c_m_a_p import CmapSubTable
 
 
+def _get_font_stream_xref(doc, font_xref):
+    """フォントのxrefから、実際のフォントプログラムが埋め込まれている
+    ストリームのxrefを見つける。"""
+    keys = doc.xref_get_keys(font_xref)
+    if 'FontDescriptor' in keys:
+        fd_ref = doc.xref_get_key(font_xref, 'FontDescriptor')
+        if fd_ref and fd_ref[0] == 'xref':
+            fd_xref = int(fd_ref[1].split()[0])
+            fd_keys = doc.xref_get_keys(fd_xref)
+            for ff_key in ('FontFile', 'FontFile2', 'FontFile3'):
+                if ff_key in fd_keys:
+                    ff_ref = doc.xref_get_key(fd_xref, ff_key)
+                    if ff_ref and ff_ref[0] == 'xref':
+                        ff_xref = int(ff_ref[1].split()[0])
+                        if doc.is_stream(ff_xref):
+                            return ff_xref
+    if doc.is_stream(font_xref):
+        return font_xref
+    return None
+
+
 def extract_font_programs(pdf_path):
     """PDFから埋め込みフォントのプログラムデータを抽出する。
-    戻り値: [(font_name, font_data_bytes), ...]
+    戻り値: [(font_name, font_data_bytes, xref), ...]
     """
     if fitz is None:
         print("ERROR: PyMuPDF (pymupdf) が必要です。 pip install pymupdf", file=sys.stderr)
@@ -36,24 +57,21 @@ def extract_font_programs(pdf_path):
     # 全ページのフォントリソースをスキャン
     for page_num in range(len(doc)):
         page = doc[page_num]
-        # ページのフォントディクショナリ
         fonts = page.get_fonts()
         for f in fonts:
-            # f: dict with keys like 'name', 'type', 'xref', 'fontname', etc.
             fonts_found.append(f)
 
-    # 重複除去（同じフォントが複数ページで参照される）
+    # 重複除去
     seen = set()
     unique_fonts = []
     for f in fonts_found:
-        # get_fonts() returns tuples: (xref, enc, type, fontname, name, enc2)
         key = (f[0], f[3])
         if key not in seen:
             seen.add(key)
             unique_fonts.append(f)
 
     if not unique_fonts:
-        print("No embedded fonts found on page resources.")
+        print("No fonts found on page resources.")
         doc.close()
         return []
 
@@ -61,13 +79,12 @@ def extract_font_programs(pdf_path):
     for f in unique_fonts:
         fontname = f[3]
         xref = f[0]
-        if not xref:
+        stream_xref = _get_font_stream_xref(doc, xref)
+        if stream_xref is None:
+            print(f"  [!] {fontname} (xref={xref}): no embedded font stream")
             continue
         try:
-            # xref からフォントオブジェクトを読み取る
-            font_obj = doc.get_tounicode(xref)
-            # フォントプログラムのストリームデータを取得
-            stream = doc.get_data(xref)
+            stream = doc.xref_stream_raw(stream_xref)
             if stream and len(stream) > 0:
                 results.append((fontname, stream, xref))
         except Exception as e:
@@ -117,25 +134,24 @@ def try_extract_font_from_pdf(pdf_path, font_index=0):
 
     results = []
 
-    # xref から生ストリームデータ取得
+    # 実際のフォントストリームxrefを見つける
+    stream_xref = _get_font_stream_xref(doc, xref)
+    if stream_xref is None:
+        print(f"  [!] No embedded font stream found")
+        doc.close()
+        return []
+
+    # ストリームから生データ取得
     try:
-        raw = doc.get_data(xref)
+        raw = doc.xref_stream_raw(stream_xref)
         if raw and len(raw) > 4:
-            # 先頭4バイトでフォント形式を判定
             sig = raw[:4]
-            if sig in (b'\x00\x01\x00\x00', b'\x01\x00\x00\x00',  # TrueType
-                       b'OTTO', b'ttcf', b'wOFF', b'wOFF'):
-                print(f"  -> Detected font signature: {sig[:4]}")
-                results.append((fontname, raw))
-            elif sig == b'\x00\x01\x00\x00' or sig[:2] in (b'\x00\x01', b'\x01\x00'):
-                # TrueType の可能性
-                results.append((fontname, raw))
-            else:
-                print(f"  -> Unrecognized signature: {sig[:4].hex()} '{sig[:4]}'")
-                # それでもTTFontに渡してみる
-                results.append((fontname, raw))
+            print(f"  -> stream xref={stream_xref}, sig={sig[:4]} ({len(raw)} bytes)")
+            results.append((fontname, raw))
+        else:
+            print(f"  [!] Stream is empty")
     except Exception as e:
-        print(f"  [!] Failed to get font data: {e}")
+        print(f"  [!] Failed to get font stream: {e}")
 
     doc.close()
     return results
@@ -251,9 +267,11 @@ def list_embedded_fonts(pdf_path):
         key = (f[0], f[3])
         if key not in seen:
             seen.add(key)
+            stream_xref = _get_font_stream_xref(doc, f[0])
+            embedded = '✅ embedded' if stream_xref is not None else '❌'
             print(f"  [{i}] xref={f[0]}  "
                   f"name='{f[3]}'  "
-                  f"type={f[2]}")
+                  f"type={f[2]}  {embedded}")
 
     doc.close()
     if not seen:

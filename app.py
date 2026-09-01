@@ -41,17 +41,55 @@ def list_embedded_fonts(pdf_bytes):
 
     doc.close()
 
+    # 2パス目: 埋め込みストリームがあるかチェック
+    doc2 = fitz.open(stream=pdf_bytes, filetype='pdf')
+    embedded_map = {}
+    for page_num in range(len(doc2)):
+        page = doc2[page_num]
+        for f in page.get_fonts():
+            xref = f[0]
+            if xref not in embedded_map:
+                stream_xref = _get_font_stream_xref(doc2, xref)
+                embedded_map[xref] = stream_xref is not None
+    doc2.close()
+
     info_lines = []
     for i, f in enumerate(unique):
+        xref = f[0]
         info_lines.append({
             'index': i,
-            'xref': f[0],
+            'xref': xref,
             'name': f[3],
             'type': f[2],
             'font_enc': f[1],
+            'embedded': embedded_map.get(xref, False),
         })
 
     return info_lines, None
+
+
+def _get_font_stream_xref(doc, font_xref):
+    """フォントのxrefから、実際のフォントプログラムが埋め込まれている
+    ストリームのxrefを見つける。"""
+    keys = doc.xref_get_keys(font_xref)
+    # FontDescriptor がある場合
+    if 'FontDescriptor' in keys:
+        fd_ref = doc.xref_get_key(font_xref, 'FontDescriptor')
+        if fd_ref and fd_ref[0] == 'xref':
+            fd_xref = int(fd_ref[1].split()[0])
+            fd_keys = doc.xref_get_keys(fd_xref)
+            # FontFile / FontFile2 / FontFile3
+            for ff_key in ('FontFile', 'FontFile2', 'FontFile3'):
+                if ff_key in fd_keys:
+                    ff_ref = doc.xref_get_key(fd_xref, ff_key)
+                    if ff_ref and ff_ref[0] == 'xref':
+                        ff_xref = int(ff_ref[1].split()[0])
+                        if doc.is_stream(ff_xref):
+                            return ff_xref
+    # フォント自体がストリームの場合（TrueType 直接埋め込みなど）
+    if doc.is_stream(font_xref):
+        return font_xref
+    return None
 
 
 def extract_font_data(pdf_bytes, font_index=0):
@@ -83,8 +121,17 @@ def extract_font_data(pdf_bytes, font_index=0):
     xref = target[0]
     fontname = target[3]
 
+    # 実際のフォントストリームxrefを見つける
+    stream_xref = _get_font_stream_xref(doc, xref)
+    if stream_xref is None:
+        doc.close()
+        return None, f"フォント {fontname} (xref={xref}) に埋め込みストリームが見つかりません"
+
     try:
-        raw = doc.get_data(xref)
+        raw = doc.xref_stream_raw(stream_xref)
+        if not raw or len(raw) == 0:
+            doc.close()
+            return None, f"フォントストリーム (xref={stream_xref}) は空です"
         doc.close()
         return (fontname, raw), None
     except Exception as e:
@@ -216,7 +263,7 @@ if not fonts:
 st.success(f"{len(fonts)} 個の埋め込みフォントを検出")
 
 # フォント選択
-font_opts = [f"  [{f['index']}] {f['name']}  (xref={f['xref']})" for f in fonts]
+font_opts = [f"  [{f['index']}] {f['name']}  (xref={f['xref']}, type={f['type']}, {'✅ embedded' if f['embedded'] else '❌ not embedded'})" for f in fonts]
 font_idx = st.selectbox(
     "解析するフォントを選択", index=0,
     options=range(len(font_opts)),
