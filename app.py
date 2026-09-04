@@ -148,19 +148,29 @@ def list_embedded_fonts(pdf_bytes):
         return [], "PyMuPDF (pymupdf) が必要です。"
 
     doc = fitz.open(stream=pdf_bytes, filetype='pdf')
-    all_fonts = []
+    # (xref, fontname) → 出現ページ番号リスト のマップを作る
+    page_map = {}
     for page_num in range(len(doc)):
         page = doc[page_num]
         for f in page.get_fonts():
-            all_fonts.append(f)
+            key = (f[0], f[3])
+            if key not in page_map:
+                page_map[key] = {'pages': set(), 'f': f}
+            page_map[key]['pages'].add(page_num + 1)  # 1-indexed ページ番号
 
+    # ユニークフォントを出現順に並べる
     seen = set()
-    unique = []
-    for f in all_fonts:
-        key = (f[0], f[3])
-        if key not in seen:
-            seen.add(key)
-            unique.append(f)
+    unique_pairs = []
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        for f in page.get_fonts():
+            key = (f[0], f[3])
+            if key not in seen:
+                seen.add(key)
+                unique_pairs.append(key)
+
+    unique = [page_map[k]['f'] for k in unique_pairs]
+    pages_list = [sorted(page_map[k]['pages']) for k in unique_pairs]
 
     doc.close()
 
@@ -179,6 +189,7 @@ def list_embedded_fonts(pdf_bytes):
             'font_enc': f[1],
             'embedded': data is not None,
             'tounicode': len(tu) > 0,
+            'pages': pages_list[i],
         })
     doc2.close()
 
@@ -192,19 +203,27 @@ def extract_font_data(pdf_bytes, font_index=0):
         return None, "PyMuPDF が必要です。"
 
     doc = fitz.open(stream=pdf_bytes, filetype='pdf')
-    candidates = []
+    # (xref, fontname) → 出現ページ番号リスト
+    page_map = {}
     for page_num in range(len(doc)):
         page = doc[page_num]
         for f in page.get_fonts():
-            candidates.append(f)
+            key = (f[0], f[3])
+            if key not in page_map:
+                page_map[key] = {'pages': set(), 'f': f}
+            page_map[key]['pages'].add(page_num + 1)
 
-    seen_xref = set()
+    seen = set()
     unique = []
-    for f in candidates:
-        x = f[0]
-        if x and x not in seen_xref:
-            seen_xref.add(x)
-            unique.append(f)
+    pages_list = []
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        for f in page.get_fonts():
+            key = (f[0], f[3])
+            if key not in seen:
+                seen.add(key)
+                unique.append(page_map[key]['f'])
+                pages_list.append(sorted(page_map[key]['pages']))
 
     if font_index >= len(unique):
         doc.close()
@@ -213,6 +232,7 @@ def extract_font_data(pdf_bytes, font_index=0):
     target = unique[font_index]
     xref = target[0]
     fontname = target[3]
+    font_pages = pages_list[font_index]
 
     font_bytes = get_font_data(doc, xref)
     if font_bytes is None:
@@ -227,6 +247,7 @@ def extract_font_data(pdf_bytes, font_index=0):
         'fontname': fontname,
         'font_bytes': font_bytes,
         'tounicode': tu,
+        'pages': font_pages,
     }, None
 
 
@@ -372,19 +393,34 @@ if not fonts:
 
 st.success(f"{len(fonts)} 個の埋め込みフォントを検出")
 
-# フォント選択
+# ❌ フォントを除外した選択用リストを作る
+selectable = [f for f in fonts if f['embedded']]
+excluded_count = len(fonts) - len(selectable)
+
+if excluded_count > 0:
+    st.caption(f"⚠ {excluded_count} 個のフォントは埋め込まれていないため選択不可（標準フォントなど）")
+
+if not selectable:
+    st.warning("解析可能な埋め込みフォントが見つかりませんでした。")
+    st.stop()
+
+# フォント選択（ページ番号付き）
 font_opts = [
     f"  [{f['index']}] {f['name']}  "
     f"(xref={f['xref']}, type={f['type']}, "
-    f"{'✅' if f['embedded'] else '❌'} "
+    f"p.{','.join(str(p) for p in f['pages'][:5])}"
+    f"{'…' if len(f['pages']) > 5 else ''}, "
     f"{'📋 ToUnicode' if f['tounicode'] else ''})"
-    for f in fonts
+    for f in selectable
 ]
-font_idx = st.selectbox(
+font_idx_real = st.selectbox(
     "解析するフォントを選択", index=0,
     options=range(len(font_opts)),
     format_func=lambda i: font_opts[i],
 )
+
+# selectable のインデックス → fonts の実際のインデックス
+font_idx = fonts.index(selectable[font_idx_real])
 
 # ---------- 抽出 & 解析 ----------
 with st.spinner("フォントデータを抽出・解析中…"):
@@ -398,8 +434,10 @@ fontname = font_data['fontname']
 raw_bytes = font_data['font_bytes']
 tu_count = len(font_data['tounicode'])
 
+font_pages = font_data.get('pages', [])
+pages_str = f"p.{','.join(str(p) for p in font_pages[:10])}{'…' if len(font_pages) > 10 else ''}" if font_pages else "ページ不明"
 st.subheader(f"フォント: {fontname}")
-st.caption(f"サイズ: {len(raw_bytes):,} バイト | ToUnicode: {tu_count} エントリ")
+st.caption(f"サイズ: {len(raw_bytes):,} バイト | {pages_str} | ToUnicode: {tu_count} エントリ")
 
 result, err = analyze_font_data(font_data, max_preview=100)
 
